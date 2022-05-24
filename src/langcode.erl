@@ -13,15 +13,11 @@
 
 %% parsing constructs
 -record(infix_op, {left, op, right}).
--record(var_ref, {name}).
-
-%% sym-solver structures
--record(symbolic_sum, {int, vars}).
--record(sym_var_times, {var, times}). %% x*2 => #sym_var_times{ var = #var_ref{ name = "x"}, times = 2 }
 
 -record(cons_fixed, {int, src_line}).
 -record(cons_relation, {sum, src_line}).
--record(var_fixed, {name, int}).
+
+-include_lib("include/globals.hrl").
 
 %% escript Entry point
 main([File]) ->
@@ -62,7 +58,7 @@ update_constraints(Var = #var{ name = N, const = Const }, Fixed) ->
 apply_fixed_vars(_Name, C = #cons_fixed{}, _Vars) ->
     C;
 apply_fixed_vars(Name, #cons_relation{ sum = S0, src_line = Line }, Vars) ->
-    S = symbolic_substitue(S0, Vars),
+    S = sym:substitue(S0, Vars),
     symbolic_sum_to_constraints(Name, S, Line).
 
 apply_constraints(V = #var{ name = N, const = Const }) ->
@@ -85,17 +81,17 @@ condition_to_constraint(#var{ name = Name }, #condition{ op = #infix_op{ op = '=
     %% and see if we can derive something useful out of it
     L = symbolic_sum(L0),
     R = symbolic_sum(R0),
-    NL = symbolic_negate(L),
-    S = symbolic_add(NL, R),
+    NL = sym:negate(L),
+    S = sym:add(NL, R),
     symbolic_sum_to_constraints(Name, S, Line).
 
 %% single variable equality we care about
-symbolic_sum_to_constraints(Name, #symbolic_sum{ int = I, vars = [#sym_var_times{ var = #var_ref{ name = Name }, times = T}]}, Line) ->
+symbolic_sum_to_constraints(Name, #symbolic_sum{ int = I, vars = [#sym_var_times{ vars = #{ #var_ref{ name = Name } := 1 }, times = T}]}, Line) ->
     Fixed = (I/T)*-1,
     [#cons_fixed{ int = Fixed, src_line = Line }];
 %% x = y or something more complicated
 symbolic_sum_to_constraints(Name, Sum = #symbolic_sum{ vars = Vars }, Line) when length(Vars) > 1 ->
-    case lists:member(Name, [N || #sym_var_times{ var = #var_ref{ name = N } } <- Vars]) of
+    case lists:member(Name, [N || #sym_var_times{ vars = ExprVars } <- Vars, {#var_ref{ name = N }, _} <- maps:to_list(ExprVars) ]) of
         false -> 
             [];
         true ->
@@ -106,53 +102,18 @@ symbolic_sum_to_constraints(_Name, _, _Line) ->
 
 %% parsing constructs -> #symbolic_sum{}
 %% 1 + x + y2 -> #symbolic_sum{ int = 1, vars = [x1, y2]}
-symbolic_sum(I) when is_integer(I) -> #symbolic_sum{ int = I, vars = [] };
-symbolic_sum(#var_ref{} = V) -> #symbolic_sum{ int = 0, vars = [#sym_var_times{ var = V, times = 1}] };
+symbolic_sum(I) when is_integer(I) -> 
+    #symbolic_sum{ int = I, vars = [] };
+symbolic_sum(#var_ref{} = V) -> 
+    #symbolic_sum{ int = 0, vars = [#sym_var_times{ vars = #{ V => 1 }, times = 1}] };
 symbolic_sum(#infix_op{ op = '*', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
     R = symbolic_sum(R0),
-    symbolic_mul(L, R);
+    sym:mul(L, R);
 symbolic_sum(#infix_op{ op = '+', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
     R = symbolic_sum(R0),
-    symbolic_add(L, R).
-
-symbolic_negate(S = #symbolic_sum{ int = I0, vars = V0 }) -> 
-    S#symbolic_sum{ int = I0 * -1, vars = [I#sym_var_times{ times = T * -1 } || I = #sym_var_times{ times = T } <- V0 ]}.
-
-symbolic_add(#symbolic_sum{ int = I1, vars = V1 }, #symbolic_sum{ int = I2, vars = V2 }) ->
-    V = unify_vars(V1 ++ V2),
-    #symbolic_sum{ int = I1 + I2, vars = V }.
-
-symbolic_mul(T = #symbolic_sum{ int = 0, vars = [] }, _) ->
-    T;
-symbolic_mul(_, T = #symbolic_sum{ int = 0, vars = [] }) ->
-    T;
-%% TODO proper sym mul
-symbolic_mul(#symbolic_sum{ int = T1, vars = [] }, #symbolic_sum{ int = T2, vars = V2 }) ->
-    #symbolic_sum{ int = T1 * T2, 
-                   vars = [ I#sym_var_times{ times = T * T1 } || I = #sym_var_times{ times = T } <- V2 ] }.
-
-symbolic_substitue(S, []) -> S;
-symbolic_substitue( S0 = #symbolic_sum{ int = I1, vars = V1 }
-                  , [ #var_fixed{ name = N, int = Value } | T ] ) ->
-    case lists:keytake(#var_ref{ name = N }, #sym_var_times.var, V1) of
-        false -> 
-            symbolic_substitue(S0, T);
-        {value, #sym_var_times{ times = Times }, V2} ->
-            S = S0#symbolic_sum{ int = I1 + (Times * Value), vars = V2 },
-            symbolic_substitue(S, T)
-    end.
-
-unify_vars(V) -> unify_vars(V, []).
-
-unify_vars([], Acc) -> Acc;
-unify_vars([H = #sym_var_times{ var = V, times = X1 } |T], Acc0) ->
-    case lists:keytake(V, #sym_var_times.var, Acc0) of
-        false -> unify_vars(T, [H|Acc0]);
-        {value, #sym_var_times{ times = X2 }, Acc} -> 
-            unify_vars(T, [H#sym_var_times{ times = X1 + X2 } | Acc])
-    end.
+    sym:add(L, R).
 
 resolve_bindings(Conds, Vars) ->
     [resolve_binding(C, Vars) || C <- Conds].
