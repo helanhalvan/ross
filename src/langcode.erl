@@ -14,10 +14,12 @@
 %% parsing constructs
 -record(infix_op, {left, op, right}).
 
--record(cons_fixed, {int, src_line}).
+-record(cons_fixed, {name, int, src_line}).
 -record(cons_relation, {sum, src_line}).
 
 -include_lib("include/globals.hrl").
+
+%% TODO comments (in the lang)
 
 %% escript Entry point
 main([File]) ->
@@ -27,11 +29,12 @@ main([File]) ->
     LogicalLines = to_logical_lines(Tokens),
     Vars = make_variables(LogicalLines),
     Conds0 = make_conditions(LogicalLines),
-    Conds = resolve_bindings(Conds0, Vars),
-    Vars1 = constrain_vars(Conds, Vars),
+    Conds1 = resolve_bindings(Conds0, Vars),
+    Conds = [cond_to_symbolic(I) || I <- Conds1],
+    Vars1 = match_conds_to_vars(Conds, Vars),
     Res = apply_fixed([], Vars1, []),
     %io:format("~p", [io_lib_pretty:print("Args: ~p~n", [{File, Bin, Tokens, VarBindings}], fun records/1 )]),
-    {Tokens, Vars, Conds, Vars1, Res}.
+    {Tokens, LogicalLines, Vars, Conds, Vars1, Res}.
 
 %%====================================================================
 %% Internal functions
@@ -43,8 +46,8 @@ apply_fixed(Fixed, Vars0, Done) ->
    {NewFixed, Rest} = lists:partition(fun(V) -> is_record(V, var_fixed) end, Vars),
    io:format("~p~n", [{?LINE, fixed_values_for, NewFixed}]),
    case {NewFixed, Rest} of
-        {_, []} -> NewFixed ++ Done;
         {[], _} -> Rest ++ Done;
+        {_, []} -> NewFixed ++ Done;
         _ -> apply_fixed(NewFixed, Rest, NewFixed ++ Done)
    end.
 
@@ -55,7 +58,8 @@ apply_fixed_vars(_Name, C = #cons_fixed{}, _Vars) ->
     C;
 apply_fixed_vars(Name, #cons_relation{ sum = S0, src_line = Line }, Vars) ->
     S = sym:substitue(S0, Vars),
-    symbolic_sum_to_constraints(Name, S, Line).
+    C = symbolic_sum_to_constraint(S, Line),
+    is_relevant_constraint(Name, C).
 
 apply_constraints(V = #var{ name = N, const = Const }) ->
     FixedValues = [X || #cons_fixed{ int = X } <- Const],
@@ -64,13 +68,23 @@ apply_constraints(V = #var{ name = N, const = Const }) ->
         [X] -> #var_fixed{ name = N, int = X }
     end.
 
-constrain_vars(Conds, Vars0) ->
-    [constrain_var(Conds, V) || {_, V = #var{}} <- maps:to_list(Vars0)].
+match_conds_to_vars(Conds, Vars0) ->
+    [apply_relevant_conds(Conds, V) || {_, V = #var{}} <- maps:to_list(Vars0)].
 
-constrain_var(Conds, V = #var{}) ->
-    V#var{ const =  lists:flatten([condition_to_constraint(V, Cond) || Cond <- Conds])}.
+apply_relevant_conds(Conds, V = #var{ name = N }) ->
+    V#var{ const =  lists:flatten([is_relevant_constraint(N, Cond) || Cond <- Conds])}.
 
-condition_to_constraint(#var{ name = Name }, #condition{ op = #infix_op{ op = '=', left = L0, right = R0}, src_line = Line }) ->
+is_relevant_constraint(N, C = #cons_fixed{ name = N }) -> 
+    C;
+is_relevant_constraint(_, #cons_fixed{}) -> 
+    [];
+is_relevant_constraint(N, C = #cons_relation{ sum = SymSum }) ->
+    case maps:get(N, sym:variables(SymSum), undefined) of
+        undefined -> [];
+        _ -> C
+    end.
+
+cond_to_symbolic(#condition{ op = #infix_op{ op = '=', left = L0, right = R0}, src_line = Line }) ->
     %% parse 1 + y = x + z 
     %% into 
     %% 1 + y + -x + -z = 0
@@ -80,17 +94,17 @@ condition_to_constraint(#var{ name = Name }, #condition{ op = #infix_op{ op = '=
     %io:format("~p~n", [{?LINE, building_symsum, L, R}]),
     NL = sym:negate(L),
     S = sym:add(NL, R),
-    symbolic_sum_to_constraints(Name, S, Line).
+    symbolic_sum_to_constraint(S, Line).
 
-symbolic_sum_to_constraints(Name, SymSum, Line) ->
+symbolic_sum_to_constraint(SymSum, Line) ->
     Map = sym:variables(SymSum),
-    case {Map, maps:size(Map)} of 
-        {#{ Name := _ }, 1} -> 
+    case maps:size(Map) of 
+        1 -> 
             Fixed = sym:single_var_sum_to_int(SymSum),
-            [#cons_fixed{ int = Fixed, src_line = Line }];
-        {#{ Name := _ }, _} -> 
-            [#cons_relation{ sum = SymSum, src_line = Line}];
-        _ -> []
+            [{Name, _}] = maps:to_list(Map),
+            #cons_fixed{ name = Name, int = Fixed, src_line = Line };
+        _ -> 
+            #cons_relation{ sum = SymSum, src_line = Line}
     end.
 
 %% parsing constructs -> #symbolic_sum{}
@@ -103,7 +117,7 @@ symbolic_sum(#infix_op{ op = '*', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
     R = symbolic_sum(R0),
     Res = sym:mul(L, R),
-    io:format("~p~n", [{?LINE, building_symsum_mul, L, R, Res}]),
+    %io:format("~p~n", [{?LINE, building_symsum_mul, L, R, Res}]),
     Res;
 symbolic_sum(#infix_op{ op = '+', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
@@ -151,17 +165,20 @@ to_logical_lines(Tokens) ->
 
 classify("int:" ++ Name) ->
     #var{ type = int, name = Name};
+classify("//" ++ _Comment) -> 
+    false;
 classify(Arg1) ->
+    %io:format("~p~n", [{?LINE, Arg1}]),
     L = split_on_operator(Arg1),
     to_operator_tree(L).
 
 to_operator_tree(List) ->
-    {Before, After} = group_by(List, '='),
+    {Before, After} = group_by('=', List),
     A = arith_pass(Before),
     B = arith_pass(After),
     #infix_op{ left = A, op = '=', right = B}.
 
-group_by(A, B) -> group_by(A, B, []).
+group_by(A, B) -> group_by(B, A, []).
 
 group_by([], _, _) -> false;
 group_by([A|_], A, []) -> false;
@@ -169,20 +186,43 @@ group_by([A|T], A, Acc) -> {Acc, T};
 group_by([H|T], A, Acc) -> group_by(T, A, Acc ++ [H]).
 
 arith_pass([I]) -> I;
+arith_pass([L, Op, R]) when Op == '+' orelse Op == '*' -> 
+    #infix_op{ left = L, op = Op, right = R};
+arith_pass(['(' | T]) ->
+    arith_matching(T, 1, []); 
 arith_pass(List) -> 
+    io:format("~p~n", [{?LINE, List}]),
     Operators = [I || I <- List, is_atom(I)],
     case lists:usort(Operators) of
-        ['+'] -> all_com_pass('+', List);
-        ['*'] -> all_com_pass('*', List)
+        ['+'] -> 
+            all_com_pass('+', List);
+        ['*'] -> 
+            all_com_pass('*', List);
+        %% will break if some operator is sorted before ')'
+        ['(', ')' | _] ->
+            %% something further down contains `(` ... `)`
+            %% deal with that bit first
+            {Before, After} = group_by('(', List),
+            arith_pass(Before ++ [ arith_matching(After, 1, []) ] )
     end.
+
+arith_matching([ H = '(' | T ], Levels, Acc) ->
+    arith_matching(T, Levels + 1, Acc ++ [H]);
+arith_matching([ ')' | T ], 1, Acc) ->
+    arith_pass([arith_pass(Acc) | T]);
+arith_matching([ H = ')' | T ], Levels, Acc) when Levels > 1 ->
+    arith_matching(T, Levels - 1, Acc ++ [H]);
+arith_matching([ H | T ], Levels, Acc) when H =/= ')' andalso H =/= '(' ->
+    arith_matching(T, Levels, Acc ++ [H]).
 
 %% case when a arith expression only contains
 %% communicative operators, i.e operators where ordering does not matter
 all_com_pass(_, [I]) -> I;
 all_com_pass(Op, List) ->
-    {A, B} = group_by(List, Op),
+    {A, B} = group_by(Op, List),
     #infix_op{ left = all_com_pass(Op, A), op = Op, right = all_com_pass(Op, B)}.
 
+split_on_operator([]) -> [];
 split_on_operator([H|T] = Line) ->
     case has_operator_prefix(Line) of
         {Prefix, Rest} -> 

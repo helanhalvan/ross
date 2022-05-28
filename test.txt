@@ -3,8 +3,19 @@ int: y;
 int: z;
 int: w;
 int: q;
+int: a;
+int: b;
+int: c;
+int: s;
+// This is a comment ;
 1 + x = y + 2 + 3;
 y = 5;
 z = x + y;
 3 * x = w;
-x = q * q;
+
+x = s * s;
+x = (q * (q + 1));
+
+a = b * b;
+b = c * c;
+c = a * a;

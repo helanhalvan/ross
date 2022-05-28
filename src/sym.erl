@@ -11,20 +11,29 @@
 %% (x^2) - 4 -> 2
 %% x + y -> false
 %% etc
-single_var_sum_to_int(#symbolic_sum{ int = I, vars = [#sym_var_times{ vars = ExprVars, times = T}]}) ->
-    case maps:to_list(ExprVars) of
-        [{_, Pow}] -> 
-            %% does not deal with muliple roots
-            math:pow((I/T)*-1, (1/Pow));
+single_var_sum_to_int(Sum = #symbolic_sum{ int = I, vars = FullVars }) ->
+    Varlist = variables_list(Sum),
+    Vars = lists:usort([V || {V, _} <- Varlist]),
+    io:format("~p~n", [{?LINE, ?MODULE, Sum, Vars, Varlist}]),
+    case length(Vars) of
+        1 -> 
+            %% This is only safe because we know there is only a single variable in this symbolic_sum
+            PolyExpr = 
+              [#poly_term{ pow = Pow, factor = Times} || #sym_var_times{ vars = ExprVars, times = Times } <- FullVars, 
+                {_, Pow} <- maps:to_list(ExprVars) ],
+            polynomial:solve(I*-1, PolyExpr);
         _ -> false 
     end;
 single_var_sum_to_int(_) -> false.
 
 %% list of vars in sym sum
 %% x + y + z -> #{x => 1,y => 1,z => 1}
-variables(#symbolic_sum{ vars = Vars }) ->
-    maps:from_list([{N, Pow} || #sym_var_times{ vars = ExprVars } <- Vars, 
-                                {#var_ref{ name = N }, Pow} <- maps:to_list(ExprVars) ]).
+variables_list(#symbolic_sum{ vars = Vars }) ->
+    [{N, Pow} || #sym_var_times{ vars = ExprVars } <- Vars, 
+                                {#var_ref{ name = N }, Pow} <- maps:to_list(ExprVars) ].
+
+variables(Sym = #symbolic_sum{}) ->
+    maps:from_list(variables_list(Sym)).
 
 add(#symbolic_sum{ int = I1, vars = V1 }, #symbolic_sum{ int = I2, vars = V2 }) ->
     V = add_unify_vars(V1 ++ V2),
@@ -72,7 +81,7 @@ mul(T = #symbolic_sum{ int = 0, vars = [] }, _) ->
 mul(_, T = #symbolic_sum{ int = 0, vars = [] }) ->
     T;
 mul(#symbolic_sum{ int = T1, vars = V1 }, #symbolic_sum{ int = T2, vars = V2 }) ->
-    io:format("~p~n", [{?LINE, ?MODULE, V1, V2}]),
+    %io:format("~p~n", [{?LINE, ?MODULE, V1, V2}]),
     V = [ sym_var_times_mul(I1, I2) || I1 <- V1, I2 <- V2 ] ++ 
         [ I2#sym_var_times{ times = Times * T1 } || I2 = #sym_var_times{ times = Times } <- V2, T1 =/= 0 ] ++
         [ I1#sym_var_times{ times = Times * T2 } || I1 = #sym_var_times{ times = Times } <- V1, T2 =/= 0 ],
@@ -91,7 +100,7 @@ var_mul(VL0, VR0) ->
     VL = maps:to_list(VL0),
     VR = maps:to_list(VR0),
     Res = var_mul_unify(VL ++ VR, #{}),
-    io:format("~p~n", [{?LINE, ?MODULE, VL, VR, Res}]),
+    %%io:format("~p~n", [{?LINE, ?MODULE, VL, VR, Res}]),
     Res.
 
 var_mul_unify([], Acc) -> Acc;

@@ -5,3 +5,5 @@
 
 -record(var_ref, {name}).
 -record(var_fixed, {name, int}).
+
+-record(poly_term, {pow, factor}).
