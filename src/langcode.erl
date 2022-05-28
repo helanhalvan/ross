@@ -28,18 +28,14 @@ main([File]) ->
     Vars = make_variables(LogicalLines),
     Conds0 = make_conditions(LogicalLines),
     Conds = resolve_bindings(Conds0, Vars),
-    Res = solve(Conds, Vars),
+    Vars1 = constrain_vars(Conds, Vars),
+    Res = apply_fixed([], Vars1, []),
     %io:format("~p", [io_lib_pretty:print("Args: ~p~n", [{File, Bin, Tokens, VarBindings}], fun records/1 )]),
-    %{Tokens, Vars, Conds, Res}
-    Res.
+    {Tokens, Vars, Conds, Vars1, Res}.
 
 %%====================================================================
 %% Internal functions
 %%====================================================================
-
-solve(Conds, Vars0) ->
-    Vars1 = constrain_vars(Conds, Vars0),
-    apply_fixed([], Vars1, []).
 
 apply_fixed(Fixed, Vars0, Done) ->
    Vars1 = [update_constraints(V, Fixed) || V <- Vars0],
@@ -81,24 +77,21 @@ condition_to_constraint(#var{ name = Name }, #condition{ op = #infix_op{ op = '=
     %% and see if we can derive something useful out of it
     L = symbolic_sum(L0),
     R = symbolic_sum(R0),
+    %io:format("~p~n", [{?LINE, building_symsum, L, R}]),
     NL = sym:negate(L),
     S = sym:add(NL, R),
     symbolic_sum_to_constraints(Name, S, Line).
 
-%% single variable equality we care about
-symbolic_sum_to_constraints(Name, #symbolic_sum{ int = I, vars = [#sym_var_times{ vars = #{ #var_ref{ name = Name } := 1 }, times = T}]}, Line) ->
-    Fixed = (I/T)*-1,
-    [#cons_fixed{ int = Fixed, src_line = Line }];
-%% x = y or something more complicated
-symbolic_sum_to_constraints(Name, Sum = #symbolic_sum{ vars = Vars }, Line) when length(Vars) > 1 ->
-    case lists:member(Name, [N || #sym_var_times{ vars = ExprVars } <- Vars, {#var_ref{ name = N }, _} <- maps:to_list(ExprVars) ]) of
-        false -> 
-            [];
-        true ->
-            [#cons_relation{ sum = Sum, src_line = Line}] 
-    end;
-symbolic_sum_to_constraints(_Name, _, _Line) ->
-    [].
+symbolic_sum_to_constraints(Name, SymSum, Line) ->
+    Map = sym:variables(SymSum),
+    case {Map, maps:size(Map)} of 
+        {#{ Name := _ }, 1} -> 
+            Fixed = sym:single_var_sum_to_int(SymSum),
+            [#cons_fixed{ int = Fixed, src_line = Line }];
+        {#{ Name := _ }, _} -> 
+            [#cons_relation{ sum = SymSum, src_line = Line}];
+        _ -> []
+    end.
 
 %% parsing constructs -> #symbolic_sum{}
 %% 1 + x + y2 -> #symbolic_sum{ int = 1, vars = [x1, y2]}
@@ -109,7 +102,9 @@ symbolic_sum(#var_ref{} = V) ->
 symbolic_sum(#infix_op{ op = '*', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
     R = symbolic_sum(R0),
-    sym:mul(L, R);
+    Res = sym:mul(L, R),
+    io:format("~p~n", [{?LINE, building_symsum_mul, L, R, Res}]),
+    Res;
 symbolic_sum(#infix_op{ op = '+', left = L0, right = R0 }) ->
     L = symbolic_sum(L0), 
     R = symbolic_sum(R0),

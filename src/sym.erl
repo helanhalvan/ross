@@ -1,6 +1,6 @@
 -module(sym).
 
--export([add/2, substitue/2, mul/2, negate/1, single_var_sum_to_int/1]).
+-export([add/2, substitue/2, mul/2, negate/1, single_var_sum_to_int/1, variables/1]).
 
 -include_lib("include/globals.hrl").
 
@@ -11,27 +11,35 @@
 %% (x^2) - 4 -> 2
 %% x + y -> false
 %% etc
-single_var_sum_to_int(#symbolic_sum{}) ->
-    false. 
+single_var_sum_to_int(#symbolic_sum{ int = I, vars = [#sym_var_times{ vars = ExprVars, times = T}]}) ->
+    case maps:to_list(ExprVars) of
+        [{_, Pow}] -> 
+            %% does not deal with muliple roots
+            math:pow((I/T)*-1, (1/Pow));
+        _ -> false 
+    end;
+single_var_sum_to_int(_) -> false.
 
 %% list of vars in sym sum
-%% x + y + z -> [x,y,z]
-variables(#symbolic_sum{}) ->
-    ok.
+%% x + y + z -> #{x => 1,y => 1,z => 1}
+variables(#symbolic_sum{ vars = Vars }) ->
+    maps:from_list([{N, Pow} || #sym_var_times{ vars = ExprVars } <- Vars, 
+                                {#var_ref{ name = N }, Pow} <- maps:to_list(ExprVars) ]).
 
 add(#symbolic_sum{ int = I1, vars = V1 }, #symbolic_sum{ int = I2, vars = V2 }) ->
-    V = unify_vars(V1 ++ V2),
+    V = add_unify_vars(V1 ++ V2),
     #symbolic_sum{ int = I1 + I2, vars = V }.
 
-unify_vars(V) -> unify_vars(V, []).
+add_unify_vars(V) -> add_unify_vars(V, []).
 
-unify_vars([], Acc) -> Acc;
-unify_vars([H = #sym_var_times{ vars = V, times = X1 } |T], Acc0) ->
+%% 3x + 2x = 5x
+add_unify_vars([], Acc) -> Acc;
+add_unify_vars([H = #sym_var_times{ vars = V, times = X1 } |T], Acc0) ->
     %% TODO xy = yx and the system will not get that
     case lists:keytake(V, #sym_var_times.vars, Acc0) of
-        false -> unify_vars(T, [H|Acc0]);
+        false -> add_unify_vars(T, [H|Acc0]);
         {value, #sym_var_times{ times = X2 }, Acc} -> 
-            unify_vars(T, [H#sym_var_times{ times = X1 + X2 } | Acc])
+            add_unify_vars(T, [H#sym_var_times{ times = X1 + X2 } | Acc])
     end.
 
 substitue(S, []) -> S;
@@ -43,25 +51,54 @@ substitue(S0 = #symbolic_sum{ vars = V1, int = Int }, [H|T]) ->
 apply_sym_sub(A, B) -> apply_sym_sub(A, B, {0, []}).
 
 apply_sym_sub([], _, Acc) -> Acc;
-%% TODO handle xy5 : y = 3 -> x15 
-apply_sym_sub([#sym_var_times{ vars = [#var_ref{ name = N }], times = Times} | T], 
+apply_sym_sub([ H0 = #sym_var_times{ vars = ExprVars, times = Times} | T], 
               V = #var_fixed{ name = N, int = Int }, {IntAcc, VarAcc}) -> 
-    apply_sym_sub(T, V, {IntAcc + (Int * Times), VarAcc});
-apply_sym_sub([Var = #sym_var_times{ vars = [_]} | T], V, {IntAcc, VarAcc}) -> 
-    apply_sym_sub(T, V, {IntAcc, [Var|VarAcc]}).
+    case maps:take(#var_ref{ name = N}, ExprVars) of
+        error -> 
+            apply_sym_sub(T, V, {IntAcc, [H0|VarAcc]});
+        {Pow, NewExprVars} when map_size(NewExprVars) == 0 -> 
+            apply_sym_sub(T, V, {IntAcc + (math:pow(Int, Pow)*Times), VarAcc});
+        {Pow, NewExprVars} ->
+            H = H0#sym_var_times{ vars = NewExprVars, times = Times * math:pow(Int, Pow)},
+            apply_sym_sub(T, V, {IntAcc + (math:pow(Int, Pow)*Times), [H|VarAcc]})
+    end.
 
 negate(S = #symbolic_sum{ int = I0, vars = V0 }) -> 
     S#symbolic_sum{ int = I0 * -1, vars = [I#sym_var_times{ times = T * -1 } || I = #sym_var_times{ times = T } <- V0 ]}.
 
+%% (1 + x) * (2 + y)
 mul(T = #symbolic_sum{ int = 0, vars = [] }, _) ->
     T;
 mul(_, T = #symbolic_sum{ int = 0, vars = [] }) ->
     T;
-%% TODO proper sym mul
 mul(#symbolic_sum{ int = T1, vars = V1 }, #symbolic_sum{ int = T2, vars = V2 }) ->
-    V = [ sym_var_times_mul(I1, I2) || I1 <- V1, I2 <- V2 ],
+    io:format("~p~n", [{?LINE, ?MODULE, V1, V2}]),
+    V = [ sym_var_times_mul(I1, I2) || I1 <- V1, I2 <- V2 ] ++ 
+        [ I2#sym_var_times{ times = Times * T1 } || I2 = #sym_var_times{ times = Times } <- V2, T1 =/= 0 ] ++
+        [ I1#sym_var_times{ times = Times * T2 } || I1 = #sym_var_times{ times = Times } <- V1, T2 =/= 0 ],
     #symbolic_sum{ int = T1 * T2, 
                    vars = V }.
 
-sym_var_times_mul(#sym_var_times{}, #sym_var_times{}) ->
-    ok.
+%% (3*xy (z^2) ) * 2xw 
+%% 6*(x^2)y(z^2)w
+sym_var_times_mul(#sym_var_times{ vars = L, times = Times1 },
+                  #sym_var_times{ vars = R, times = Times2 }) ->
+    ExprVars = var_mul(L, R),
+    #sym_var_times{ times = Times1 * Times2, vars = ExprVars }.
+
+%% xy * yz -> x * y * y * z -> x(y^2)z
+var_mul(VL0, VR0) -> 
+    VL = maps:to_list(VL0),
+    VR = maps:to_list(VR0),
+    Res = var_mul_unify(VL ++ VR, #{}),
+    io:format("~p~n", [{?LINE, ?MODULE, VL, VR, Res}]),
+    Res.
+
+var_mul_unify([], Acc) -> Acc;
+var_mul_unify([{Key, Pow}|T], Acc0) -> 
+    case maps:take(Key, Acc0) of
+        error -> 
+            var_mul_unify(T, Acc0#{ Key => Pow });
+        {AccPow, Acc1} -> 
+            var_mul_unify(T, Acc1#{ Key => AccPow + Pow }) 
+    end.
