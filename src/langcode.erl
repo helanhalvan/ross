@@ -185,13 +185,14 @@ group_by([A|_], A, []) -> false;
 group_by([A|T], A, Acc) -> {Acc, T};
 group_by([H|T], A, Acc) -> group_by(T, A, Acc ++ [H]).
 
+%% parses arithmetic expression
+%% will fail if order of operations matter
+%% i.e 1 + 2 * 3 will (and should) fail
 arith_pass([I]) -> I;
-arith_pass([L, Op, R]) when Op == '+' orelse Op == '*' -> 
-    #infix_op{ left = L, op = Op, right = R};
 arith_pass(['(' | T]) ->
     arith_matching(T, 1, []); 
 arith_pass(List) -> 
-    io:format("~p~n", [{?LINE, List}]),
+    %%io:format("~p~n", [{?LINE, List}]),
     Operators = [I || I <- List, is_atom(I)],
     case lists:usort(Operators) of
         ['+'] -> 
@@ -206,6 +207,7 @@ arith_pass(List) ->
             arith_pass(Before ++ [ arith_matching(After, 1, []) ] )
     end.
 
+%% removes the outermost () pair and parses the result
 arith_matching([ H = '(' | T ], Levels, Acc) ->
     arith_matching(T, Levels + 1, Acc ++ [H]);
 arith_matching([ ')' | T ], 1, Acc) ->

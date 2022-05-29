@@ -7,3 +7,5 @@
 -record(var_fixed, {name, int}).
 
 -record(poly_term, {pow, factor}).
+%% int = terms -> 1 = kx + kx^2 ... 
+-record(poly_eq, {int, terms}).

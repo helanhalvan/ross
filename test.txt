@@ -8,6 +8,7 @@ int: b;
 int: c;
 int: s;
 // This is a comment ;
+
 1 + x = y + 2 + 3;
 y = 5;
 z = x + y;

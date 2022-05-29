@@ -21,7 +21,7 @@ single_var_sum_to_int(Sum = #symbolic_sum{ int = I, vars = FullVars }) ->
             PolyExpr = 
               [#poly_term{ pow = Pow, factor = Times} || #sym_var_times{ vars = ExprVars, times = Times } <- FullVars, 
                 {_, Pow} <- maps:to_list(ExprVars) ],
-            polynomial:solve(I*-1, PolyExpr);
+            poly:solve_or_state(I*-1, PolyExpr);
         _ -> false 
     end;
 single_var_sum_to_int(_) -> false.
